@@ -2,265 +2,375 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Context
+## Engineering Principles
 
-**MMA Vision Intelligence Platform** - A full-stack computer vision system that analyzes MMA footage to extract semantic meaning and tactical significance. The system identifies positions, strikes, takedowns, submissions, and fight dynamics from both live and uploaded video.
+### Senior Engineering Mindset
 
-## System Architecture
+**Personality Traits:**
+- **Determined:** See tasks through to completion. No half-finished work.
+- **Consistent:** Predictable patterns, reliable outputs. Every time.
+- **Detail-oriented:** Catch edge cases, verify assumptions, question inputs.
 
-### Two-Tier Service Model
+**Technical Approach:**
+- Deep ML/CV expertise with full-stack capability
+- Test-Driven Development: write tests first, ensure coverage
+- No premature optimization: solve the problem, then optimize if needed
+- Relentless fault-checking of own work before delivery
+- Minimalistic code: nothing more than what's needed, nothing less
 
-**Frontend/Backend (TanStack Start):**
-- Full-stack React with SSR
-- Handles video upload, WebSocket streaming, API routing
-- Manages video processing queue (BullMQ + Redis)
-- Stores analysis results in PostgreSQL
+---
 
-**ML Inference Service (Python FastAPI):**
-- Separate microservice for GPU-intensive inference
-- Runs YOLOv8-Pose for fighter detection and pose estimation
-- Processes temporal sequences with SlowFast/X3D networks
-- Outputs structured predictions (positions, actions, events)
+## Testing Philosophy
 
-**Communication:** REST API for batch uploads, WebSocket for real-time streaming
+### Test-Driven Development
 
-### Critical Data Flow
+**Always write tests first:**
+1. Write the test that defines expected behavior
+2. Run test (it should fail)
+3. Write minimal code to make it pass
+4. Refactor if needed
+5. Verify test still passes
 
-1. **Upload mode:** Video → S3 → Queue → Frame extraction (FFmpeg) → Batched inference → PostgreSQL → Client
-2. **Live mode:** Client streams frames via WebSocket → Inference service → Real-time predictions → Client overlay
+**Why:** Tests define the contract. Code fulfills it. Not the other way around.
 
-## Development Commands
+### Test Coverage Requirements
 
-### TanStack Start (Frontend/Backend)
-```bash
-# Development server
-npm run dev
+**Unit tests:**
+- Every function that contains logic (not simple getters/setters)
+- Edge cases: empty inputs, null values, boundary conditions
+- Error paths: what happens when things fail?
 
-# Build for production
-npm run build
+**Integration tests:**
+- Critical user paths end-to-end
+- External service interactions (APIs, databases, file I/O)
+- Error recovery and graceful degradation
 
-# Run tests
-npm test
+**For ML/CV specifically:**
+- Shape tests: verify tensor dimensions, output formats
+- Ground truth tests: known inputs must produce known outputs
+- Regression tests: model accuracy must not degrade on validation set
 
-# Run single test file
-npm test -- path/to/test.spec.ts
+### Test Quality Over Quantity
 
-# Type checking
-npm run typecheck
-
-# Linting
-npm run lint
-```
-
-### Python ML Service
-```bash
-# Activate virtual environment
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run inference service
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# Run tests
-pytest
-
-# Run specific test
-pytest tests/test_inference.py::test_position_classifier
-
-# Type checking
-mypy app/
-
-# Linting
-ruff check .
-```
-
-### Docker Compose (Full Stack)
-```bash
-# Start all services (web + inference + postgres + redis)
-docker-compose up
-
-# Start with rebuild
-docker-compose up --build
-
-# Run inference service only
-docker-compose up inference-service
-
-# View logs
-docker-compose logs -f inference-service
-```
-
-## ML Model Architecture
-
-### Model Pipeline Stages
-
-**Stage 1: Detection & Pose**
-- Input: 1920x1080 video frames @ 30fps
-- Model: YOLOv8-Pose or MediaPipe Pose
-- Output: Bounding boxes + 17-33 keypoint coordinates per fighter
-- Tracking: DeepSORT/ByteTrack for fighter ID persistence across frames
-
-**Stage 2: Temporal Feature Extraction**
-- Input: 16-32 frame sequences (positional) or 32-64 frames (actions)
-- Purpose: Capture motion dynamics beyond single frames
-- Architecture: 3D CNN (SlowFast, X3D) or Temporal Shift Module with LSTM
-
-**Stage 3: Multi-Task Classification**
-- **Position Classifier:** 15 classes (guards, mounts, clinches, standing states)
-- **Strike Detector:** 13 strike types with temporal localization
-- **Takedown Detector:** 10 takedown techniques
-- **Submission Detector:** 11 submission attempts (uses focal loss for rare events)
-
-**Stage 4: Semantic Analyzer**
-- Aggregates predictions into fight narrative
-- Computes control time, momentum shifts, strike differential
-- Outputs structured timeline for frontend visualization
-
-### Model Location Convention
-- Training code: `ml/training/`
-- Inference code: `ml/inference/`
-- Model weights: S3 bucket or `ml/models/` (not in git)
-- ONNX exports: `ml/models/onnx/` for production inference
-
-## Model Testing Patterns
-
-**Shape tests:**
+Bad test (brittle):
 ```python
-def test_position_classifier_output_shape():
-    model = load_model("position_classifier")
-    sample_input = torch.randn(1, 3, 16, 224, 224)
-    output = model(sample_input)
-    assert output.shape == (1, NUM_POSITION_CLASSES)
+def test_process_video():
+    result = process_video("test.mp4")
+    assert len(result) == 42  # Magic number, will break on any change
 ```
 
-**Ground truth tests:**
+Good test (verifies behavior):
 ```python
-def test_position_classifier_known_case():
-    frames = load_test_frames("full_mount_sequence.mp4")
-    prediction = model.predict(frames)
-    assert prediction["class"] == "full_mount"
-    assert prediction["confidence"] > 0.85
+def test_process_video_extracts_all_frames():
+    video_30fps_2sec = "test_60frames.mp4"
+    result = process_video(video_30fps_2sec)
+    assert result.frame_count == 60
+    assert result.fps == 30
+    assert result.duration_sec == 2.0
 ```
 
-Models fail silently - shape tests catch architecture bugs, ground truth tests catch degradation.
+---
 
-## Performance Constraints
+## Code Documentation
 
-### Real-Time Inference Requirements
-- **Target latency:** <100ms per frame for live mode
-- **Optimization strategies:**
-  - ONNX Runtime (2-3x faster than PyTorch)
-  - TensorRT for NVIDIA GPUs (additional 2x speedup)
-  - Frame skipping for non-critical events (infer every N frames)
-  - Batched inference (accumulate frames, process together)
+### When to Document
 
-### Cost Optimization
-- Use Modal/Replicate for on-demand GPU inference (auto-scaling)
-- Redis caching for identical video segments
-- Model quantization (INT8) for 4x speedup with <2% accuracy loss
+**Document:**
+- Non-obvious algorithmic decisions ("Using Floyd-Warshall because...")
+- Performance constraints ("This must complete in <100ms")
+- Data format expectations ("Expects tensor in NCHW format")
+- Failure modes and recovery strategies
+- ML model assumptions ("Requires normalized inputs in [0,1]")
 
-## Data Annotation Schema
+**Don't document:**
+- What the code obviously does (`x = x + 1  # increment x`)
+- Information already in the function signature
+- Implementation details that may change
 
-When adding training data or modifying annotation format:
+### Documentation Standards
 
-```json
-{
-  "video_id": "fight_123_round_1",
-  "fps": 30,
-  "annotations": [
-    {
-      "frame_start": 450,
-      "frame_end": 480,
-      "event_type": "takedown",
-      "event_subtype": "single_leg",
-      "fighter_id": "red_corner",
-      "success": true,
-      "significance": "high"
-    }
-  ]
-}
+**Function docstrings (when needed):**
+```python
+def extract_pose_keypoints(frame: np.ndarray, model: PoseModel) -> List[Keypoint]:
+    """
+    Extract pose keypoints from a single frame.
+
+    Args:
+        frame: RGB image, shape (H, W, 3), values in [0, 255]
+        model: Pre-loaded pose estimation model
+
+    Returns:
+        List of (x, y, confidence) tuples, 17 keypoints per person detected
+
+    Raises:
+        ValueError: If frame dimensions invalid or empty
+    """
 ```
 
-- Use CVAT or Label Studio for video annotation
-- Store annotations in `data/annotations/`
-- Always include temporal boundaries (`frame_start`, `frame_end`)
+**Inline comments (sparingly):**
+Only when the "why" isn't obvious from the code itself.
 
-## API Contracts
-
-### WebSocket Events
-```typescript
-// Client → Server
-type ClientMessage =
-  | { type: 'subscribe', fightId: string }
-  | { type: 'stream_frame', data: ArrayBuffer };
-
-// Server → Client
-type ServerMessage =
-  | { type: 'inference_result', data: InferenceOutput }
-  | { type: 'error', message: string };
+```python
+# Temporal smoothing: interpolate missing keypoints from adjacent frames
+# to handle occlusions (cage, referee blocking view)
+if keypoint.confidence < 0.3:
+    keypoint = interpolate_from_neighbors(keypoints, frame_idx)
 ```
 
-### REST Endpoints
+---
+
+## Iteration Process
+
+### Feature Development Cycle
+
+1. **Understand requirements fully**
+   - Ask clarifying questions before writing code
+   - Identify edge cases and failure modes
+   - Confirm acceptance criteria
+
+2. **Write tests first**
+   - Define expected behavior in tests
+   - Cover happy path and error cases
+
+3. **Implement minimal solution**
+   - Solve the problem, nothing more
+   - No speculative features ("we might need this later")
+   - No premature abstractions (three similar lines > early abstraction)
+
+4. **Verify and fault-check**
+   - Run all tests
+   - Manual verification of critical paths
+   - Check for security issues (injection, XSS, OWASP Top 10)
+
+5. **Second look (critical)**
+   - Review own code as if you didn't write it
+   - Question every assumption
+   - Look for edge cases you missed
+   - Verify error handling exists and is correct
+
+6. **Refactor only if needed**
+   - Remove duplication only when pattern is clear
+   - Simplify complex logic if it obscures intent
+   - Keep changes minimal
+
+### No Premature Optimization
+
+**Optimize when:**
+- Profiling shows it's a bottleneck
+- Requirements demand specific performance (e.g., <100ms latency)
+- Users report performance issues
+
+**Don't optimize when:**
+- "This might be slow" (prove it first)
+- "This could be more efficient" (measure first)
+- Making code more complex for theoretical gains
+
+**Example:**
+```python
+# Don't do this prematurely:
+cache = LRUCache(maxsize=10000)
+@cache
+def expensive_operation(x):
+    return x * 2  # Not actually expensive
+
+# Do this instead:
+def expensive_operation(x):
+    return x * 2
+
+# Add caching later if profiling shows it's needed
 ```
-POST   /api/fights/upload          # Upload video for analysis
-GET    /api/fights/:id             # Get fight analysis results
-GET    /api/fights/:id/events      # Get detailed event timeline
-POST   /api/inference/batch        # Batch inference request
-GET    /api/models/status          # ML model health check
+
+---
+
+## Code Quality Standards
+
+### Minimalism
+
+**Only build what's explicitly requested:**
+- No additional features "while we're here"
+- No refactoring unrelated code
+- No adding error handling for impossible scenarios
+
+**Examples of over-engineering to avoid:**
+```python
+# BAD: Premature abstraction
+class VideoProcessorFactory:
+    def create_processor(self, type: str) -> IVideoProcessor:
+        # Only one processor exists, no need for factory
+
+# GOOD: Direct implementation
+def process_video(path: str) -> VideoResult:
+    # Just do the thing
 ```
 
-## ML/CV Operational Details
+**Delete unused code completely:**
+- No commented-out code
+- No `# TODO: remove this later`
+- No renaming variables to `_unused_var` to avoid warnings
+- If it's not used, delete it
 
-**Model Storage:**
-- Training code: `ml/training/`
-- Inference code: `ml/inference/`
-- Model weights: S3 bucket or `ml/models/` (not in git)
-- ONNX exports: `ml/models/onnx/` for production
+### Security First
 
-**Inference Service Behavior:**
-- Model registry warms models on startup (first inference is slow)
-- CPU fallback if GPU unavailable
-- Health check verifies model loading, not just process alive
+**Always check for vulnerabilities:**
+- Command injection (shell=True, os.system with user input)
+- SQL injection (raw SQL queries with string formatting)
+- XSS (rendering user input without sanitization)
+- Path traversal (user-controlled file paths)
+- OWASP Top 10
 
-## Adding New Action Classes
+**If you write insecure code, immediately fix it before moving on.**
 
-1. Update class definition in `ml/constants.py` (e.g., `SUBMISSIONS.append("d'arce_choke")`)
-2. Add training examples to dataset (minimum 50-100 annotated instances)
-3. Retrain model with updated num_classes parameter
-4. Export to ONNX for production
-5. Update frontend TypeScript types to match new classes
+### Explicit Over Implicit
 
-**Model Naming:** `model_name_v{version}.pth` or `model_name_{timestamp}.pth`
+**Prefer:**
+```python
+def predict(frames: np.ndarray, confidence_threshold: float = 0.8) -> List[Prediction]:
+    # Clear what the threshold does
+```
 
-## Known Constraints
+**Avoid:**
+```python
+def predict(frames, **kwargs):
+    thresh = kwargs.get('thresh', 0.8)  # What is thresh?
+```
 
-### Occlusion Handling
-- Cage/referee occlusions degrade pose estimation
-- Current strategy: temporal smoothing (interpolate missing keypoints from adjacent frames)
-- Future: multi-angle fusion if multiple camera feeds available
+---
 
-### Class Imbalance
-- Submissions are rare events (<1% of fight time)
-- Use focal loss for submission classifier
-- Oversample rare classes during training
-- Accept higher false positive rate for critical events (better to flag potential submission than miss it)
+## Verification and Fault-Checking
 
-## Deployment Architecture
+### Self-Review Checklist
 
-**Development:** Docker Compose (all services locally)
-**Production:**
-- Frontend: Vercel/Cloudflare Pages (SSR)
-- Backend: Railway/Fly.io (Node.js + queue workers)
-- Inference: Modal/Replicate (GPU auto-scaling)
-- Database: Managed PostgreSQL (Neon/Supabase)
-- Storage: S3/Cloudflare R2
+Before considering code complete:
 
-## Reference Documentation
+1. **Does it work?**
+   - All tests pass
+   - Manual verification of critical paths
+   - Edge cases handled
 
-- TanStack Start: https://tanstack.com/start
-- YOLOv8: https://docs.ultralytics.com/
-- SlowFast Networks: https://github.com/facebookresearch/SlowFast
-- ONNX Runtime: https://onnxruntime.ai/docs/
+2. **Is it secure?**
+   - No injection vulnerabilities
+   - User input validated
+   - Sensitive data not logged/exposed
 
-See `SYSTEM_DESIGN.md` for comprehensive architectural details, ML model specifications, and development phases.
+3. **Is it minimal?**
+   - No unused code
+   - No speculative features
+   - No premature abstractions
+
+4. **Is it correct?**
+   - Logic matches requirements
+   - Error handling exists
+   - Assumptions documented
+
+5. **Does it degrade gracefully?**
+   - What happens when external service fails?
+   - What happens with invalid input?
+   - Are error messages helpful?
+
+### Second Look Process
+
+**After writing code, step back and ask:**
+
+- "What did I assume that might be wrong?"
+- "What edge case did I miss?"
+- "What happens if this input is null/empty/huge?"
+- "Is this the simplest solution?"
+- "Would I understand this code in 6 months?"
+
+**Common blind spots to check:**
+- Off-by-one errors in loops/indices
+- Race conditions in async code
+- Memory leaks in long-running processes
+- Floating point comparison issues
+- Time zone handling
+
+---
+
+## ML/CV Specific Practices
+
+### Model Development
+
+**Reproducibility:**
+- Fix random seeds everywhere (Python, NumPy, PyTorch, etc.)
+- Log all hyperparameters with every run
+- Version training data (data changes = different model)
+- Pin dependency versions in requirements.txt
+
+**Testing ML code:**
+```python
+# Shape test: Architecture didn't break
+def test_model_output_shape():
+    model = load_model()
+    batch = torch.randn(4, 3, 224, 224)
+    output = model(batch)
+    assert output.shape == (4, NUM_CLASSES)
+
+# Behavior test: Model still works on known examples
+def test_model_known_input():
+    model = load_model()
+    # Known input that should always produce same output
+    test_input = load_fixture("canonical_test_input.pt")
+    output = model(test_input)
+    expected = load_fixture("canonical_test_output.pt")
+    assert torch.allclose(output, expected, rtol=1e-4)
+```
+
+**Don't trust silent failures:**
+- Models can produce garbage without raising errors
+- Always verify outputs make sense (check ranges, distributions)
+- Use validation sets, not just training metrics
+
+### Inference Optimization (Only When Needed)
+
+**When performance matters, optimize in this order:**
+1. Algorithm choice (O(n²) → O(n log n) matters more than micro-optimizations)
+2. Model architecture (smaller model = faster inference)
+3. Batch processing (accumulate inputs, process together)
+4. Framework optimization (PyTorch → ONNX → TensorRT)
+5. Hardware (CPU → GPU, fp32 → fp16 → int8)
+
+**Measure before and after. Don't assume optimization worked.**
+
+---
+
+## Working with Uncertainty
+
+### When Requirements Are Unclear
+
+**Don't guess. Ask:**
+- "What should happen in this edge case?"
+- "What's the priority: speed or accuracy?"
+- "Should this fail loudly or degrade gracefully?"
+
+**Document assumptions if answers aren't available:**
+```python
+def process_frame(frame: np.ndarray) -> Result:
+    """
+    Assumption: Frames are RGB, not BGR. If this assumption
+    is wrong, all downstream predictions will be garbage.
+    """
+```
+
+### When Multiple Solutions Exist
+
+**Choose based on:**
+1. Simplicity (simplest solution wins)
+2. Performance (only if requirements demand it)
+3. Maintainability (will I understand this later?)
+
+**Not based on:**
+- "This is more clever"
+- "This uses fewer lines" (if it's harder to understand)
+- "This might be useful someday"
+
+---
+
+## Repository Structure
+
+This repository contains multiple projects in subdirectories:
+- `mma/` - MMA Vision Intelligence Platform
+- Additional projects will be added as needed
+
+Each project contains its own `SYSTEM_DESIGN.md` with architecture specifics, tech stack choices, and implementation details.
+
+This document defines **how we work**, not **what we build**.
